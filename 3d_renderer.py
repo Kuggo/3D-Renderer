@@ -57,6 +57,9 @@ class Color:
     def __ne__(self, other: 'Color'):
         return not self == other
 
+    def __round__(self, n=None):
+        return Color(round(self.r, n), round(self.g, n), round(self.b, n))
+
     def __hash__(self):
         return hash((self.r, self.g, self.b))
 
@@ -107,6 +110,9 @@ class Point2D:
     def __rshift__(self, other: int):
         return Point2D(self.x >> other, self.y >> other)
 
+    def __round__(self, n=None):
+        return Point2D(round(self.x, n), round(self.y, n))
+
     def distance(self, other: 'Point2D') -> int | float:
         return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5
 
@@ -145,7 +151,6 @@ class Line2D:
 
         d = self.b - self.a
         d_color = (self.b.color - self.a.color)
-        vertical_line = abs(d.x) < abs(d.y)
 
         factor = find_factor(d)
         if factor == 0:
@@ -199,6 +204,9 @@ class Point3D(Point2D):
     def __mul__(self, other: int|float):
         return Point3D(self.x * other, self.y * other, self.z * other)
 
+    def __round__(self, n=None):
+        return Point3D(round(self.x, n), round(self.y, n), round(self.z, n))
+
     def distance(self, other: 'Point3D') -> int | float:
         return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2 + (self.z - other.z) ** 2) ** 0.5
 
@@ -206,7 +214,8 @@ class Point3D(Point2D):
         return abs(self.x - other.x) + abs(self.y - other.y) + abs(self.z - other.z)
 
     def project(self, projector: 'Projector') -> 'Point2D':
-        return projector.project(self)
+        camera_p = projector.world_to_camera(self)
+        return projector.project(camera_p)
 
     def render(self, projector: 'Projector'):
         """Projects and draws the point on the screen"""
@@ -243,19 +252,30 @@ class Line3D:
         return self.a.manhattan_distance(self.b)
 
     def project(self, projector: 'Projector'):
-        # checking if line intersects camera plane
-        point = projector.intersect_line_camera(self)
-        if point is not None:
-            if projector.behind_camera(self.a):
-                return Line2D(point, self.b.project(projector))
-            else:
-                return Line2D(self.a.project(projector), point)
+        a = projector.world_to_camera(self.a)
+        b = projector.world_to_camera(self.b)
+        l = Line3D(a, b)
 
-        return Line2D(self.a.project(projector), self.b.project(projector))
+        # checking if line intersects camera plane
+        point = projector.intersect_line_camera(l)
+        if point is not None:
+            if projector.behind_camera(a):
+                return Line2D(projector.project(point), projector.project(b))
+            else:
+                return Line2D(projector.project(a), projector.project(point))
+
+        elif projector.behind_camera(a) and projector.behind_camera(b):
+            raise BehindCameraError
+
+        else:
+            return Line2D(projector.project(a), projector.project(b))
 
     def render(self, projector: 'Projector'):
         """Projects and draws the point on the screen"""
-        l2d = self.project(projector)
+        try:
+            l2d = self.project(projector)
+        except BehindCameraError:
+            return
         l_culled = projector.screen.line_culling(l2d)
         projector.screen.draw_pixels(l_culled.pixels())
         return
@@ -290,7 +310,10 @@ class Polygon:
     def project(self, projector: 'Projector') -> list[Line2D]:
         lines = []
         for line in self.lines:
-            lines.append(line.project(projector))
+            try:
+                lines.append(line.project(projector))
+            except BehindCameraError:
+                continue
 
         return lines
 
@@ -435,16 +458,16 @@ class Projector:    # default is orthographic projection
         if self.behind_camera(p):
             raise BehindCameraError
 
-        p_moved = p - self.camera
-
-        p_rotated = self.rotate(p_moved)
-        return Point2D(round(p_rotated.x * self.pixels_per_unit), round(p_rotated.y * self.pixels_per_unit), p.color)
+        return Point2D(round(p.x * self.pixels_per_unit), round(p.y * self.pixels_per_unit), p.color)
 
     def rotate(self, p: Point3D) -> Point3D:
         x = self.rotate_for_x(p)
         y = self.rotate_for_y(p)
         z = self.rotate_for_z(p)
         return Point3D(x, y, z, p.color)
+
+    def world_to_camera(self, p: Point3D) -> Point3D:
+        return self.rotate(p - self.camera)
 
     def rotate_for_x(self, p: Point3D):  # rotation matrix's yaw = y axis, pitch = x axis, roll = y axis
         x = (p.x * math.cos(self.roll)) - (p.y * math.sin(self.roll))
@@ -463,9 +486,9 @@ class Projector:    # default is orthographic projection
         or it's contained on the place"""
 
         if self.behind_camera(line.a) ^ self.behind_camera(line.b):
-            k = -line.a.z / (line.b.z - line.a.z)   # no div by zero for sure
-            color = line.a.color + (line.b.color - line.a.color) * k
-            return Point3D((k-1) * (line.b.x - line.a.x), (k-1) * (line.b.y - line.a.y), 0, color)
+            k = inv_lerp(line.a.z, line.b.z, 0)     # no div by zero for sure
+            color = lerp(line.a.color, line.b.color, k).__round__()
+            return Point3D(lerp(line.a.x, line.b.x, k), lerp(line.a.y, line.b.y, k), 0, color)
 
         return None
 
@@ -488,9 +511,9 @@ class PerspectiveProjector(Projector):
         or it's contained on the place"""
 
         if self.behind_camera(line.a) ^ self.behind_camera(line.b):
-            k = (self.focal_length - line.a.z) / (line.b.z - line.a.z)  # no div by zero for sure
-            color = line.a.color * (1 - k) + line.b.color * k
-            return Point3D((k - 1) * (line.b.x - line.a.x), (k - 1) * (line.b.y - line.a.y), self.focal_length, color)
+            k = inv_lerp(line.a.z, line.b.z, self.focal_length)  # no div by zero for sure
+            color = lerp(line.a.color, line.b.color, k).__round__()
+            return Point3D(lerp(line.a.x, line.b.x, k), lerp(line.a.y, line.b.y, k), self.focal_length, color)
 
         return None
 
@@ -501,12 +524,8 @@ class PerspectiveProjector(Projector):
         if self.behind_camera(p):
             raise BehindCameraError
 
-        p_moved = p - self.camera
-
-        p_rotated = self.rotate(p_moved)
-
-        x = (p_rotated.x * self.focal_length) / p_rotated.z
-        y = (p_rotated.y * self.focal_length) / p_rotated.z
+        x = (p.x * self.focal_length) / p.z
+        y = (p.y * self.focal_length) / p.z
         return Point2D(round(x * self.pixels_per_unit), round(y * self.pixels_per_unit), p.color)
 
 
@@ -519,26 +538,41 @@ def smt(projector: Projector, i):
     pi_div_by_50 = math.pi * 2 / 100
     # fl = projector.focal_length
 
-    a = Point3D(-1, -1, 2)
-    b = Point3D(-1, -1, 4)
-    c = Point3D(1, -1, 2)
-    d = Point3D(1, -1, 4)
-    e = Point3D(-1, 1, 2)
-    f = Point3D(-1, 1, 4)
-    g = Point3D(1, 1, 2)
-    h = Point3D(1, 1, 4)
+    a = Point3D(-1, -1, 2, Color(255, 0, 0))
+    b = Point3D(-1, -1, 4, Color(0, 255, 0))
+    c = Point3D(1, -1, 2, Color(0, 0, 255))
+    d = Point3D(1, -1, 4, Color(0, 255, 0))
+    e = Point3D(-1, 1, 2, Color(255, 0, 0))
+    f = Point3D(-1, 1, 4, Color(0, 0, 255))
+    g = Point3D(1, 1, 2, Color(0, 255, 0))
+    h = Point3D(1, 1, 4, Color(255, 0, 0))
 
     connections = [(0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3), (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)]
 
     cube = Polygon([a, b, c, d, e, f, g, h], connections)
 
+    projector.yaw = i * pi_div_by_50  # 1.1309733552923256
     cube.render(projector)
+    return
+
+
+def debug(projector: Projector, i):
+    pi_div_by_50 = math.pi * 2 / 100
+    a = Point3D(-1, -1, 2, Color(255, 0, 0))
+    b = Point3D(-1, -1, 4, Color(0, 255, 0))
+    c = Point3D(1, -1, 2, Color(0, 0, 255))
+    d = Point3D(1, -1, 4, Color(0, 255, 0))
+
+    connections = [(0, 1), (0, 2), (1, 3), (2, 3)]
+
+    quad = Polygon([a, b, c, d], connections)
+    triangle = Polygon([a, b, c], [(0, 1), (0, 2), (1, 2)])
+
+    # projector.yaw = 1.1309733552923256
     projector.yaw = i * pi_div_by_50
+    # quad.render(projector)
+    triangle.render(projector)
 
-    # screen.draw_pixels(triangle.pixels(projector))
-
-    l = Line2D(Point2D(0, 10), Point2D(11, 0)).pixels()
-    #projector.screen.draw_pixels(l)
     return
 
 
@@ -564,6 +598,7 @@ def main():
                 running = False
 
         smt(projector, iteration_n)
+        #debug(projector, iteration_n)
 
         screen.update()
         iteration_n += 1
