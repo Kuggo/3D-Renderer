@@ -155,6 +155,52 @@ class Line2D:
 
     def pixels(self) -> set[Point2D]:
         """Returns a set of all points that make up the line"""
+        a = self.a
+        b = self.b
+        dx = abs(b.x - a.x)
+        dy = abs(b.y - a.y)
+        steep = dy > dx
+
+        # reflect over y = x
+        if steep:
+            a.x, a.y = a.y, a.x
+            b.x, b.y = b.y, b.x
+            dx, dy = dy, dx
+
+        # swap points   (180 rotation around the origin)
+        if a.x > b.x:
+            a, b = b, a
+
+        if dx == 0:
+            return {self.a}
+
+        # line goes either up or down
+        step = 1 if a.y < b.y else -1
+        color_step = (b.color - a.color) / dx
+
+        pixels = set()
+
+        color = self.a.color
+        p = (dy << 1) - dx
+        y = a.y
+        for x in range(a.x, b.x + 1):
+            if steep:
+                pixels.add(Point2D(y, x, color.round()))
+            else:
+                pixels.add(Point2D(x, y, color.round()))
+
+            if p >= 0:
+                y += step
+                p += (dy - dx) << 1
+            else:
+                p += dy << 1
+
+            color += color_step
+        print(pixels)
+        return pixels
+
+    def pixels_old(self) -> set[Point2D]:
+        """Returns a set of all points that make up the line"""
 
         def find_factor(d: Point2D) -> int:
             f = 0
@@ -255,6 +301,36 @@ class Vector(Point3D):
                       self.z * other.x - self.x * other.z,
                       self.x * other.y - self.y * other.x)
 
+    def normalize(self) -> 'Vector':
+        return self * (1 / self.magnitude())
+
+    def magnitude(self) -> int|float:
+        return math.sqrt(self.x ** 2 + self.y ** 2 + self.z ** 2)
+
+    def angle(self, other: 'Vector') -> int|float:
+        return math.acos(self.dot(other) / (self.magnitude() * other.magnitude()))
+
+    def rotate_pitch(self, pitch: float):
+        cos_pitch = math.cos(pitch)
+        sin_pitch = math.sin(pitch)
+        x = self.x * cos_pitch - self.z * sin_pitch
+        z = self.x * sin_pitch + self.z * cos_pitch
+        return Vector(x, self.y, z)
+
+    def rotate_yaw(self, yaw: float):
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        x = self.x * cos_yaw - self.z * sin_yaw
+        z = self.x * sin_yaw + self.z * cos_yaw
+        return Vector(x, self.y, z)
+
+    def rotate_roll(self, roll: float):
+        cos_roll = math.cos(roll)
+        sin_roll = math.sin(roll)
+        x = self.x * cos_roll - self.y * sin_roll
+        y = self.x * sin_roll + self.y * cos_roll
+        return Vector(x, y, self.z)
+
 
 class Line3D:
     def __init__(self, a: Point3D, b: Point3D):
@@ -341,7 +417,7 @@ class Polygon:
             except BehindCameraError:
                 continue
             lines.append(l2d)
-
+        print(lines)
         return lines
 
     def render(self, camera: 'Camera'):
@@ -386,39 +462,41 @@ class Screen:
         if self.in_bounds(line.a) and self.in_bounds(line.b):
             return line
 
-        w2 = self.width >> 1
-        h2 = self.height >> 1
+        left_bound = -(self.width >> 1)
+        right_bound = (self.width >> 1) - 1
+        bottom_bound = -(self.height >> 1)
+        top_bound = (self.height >> 1) - 1
 
         intersecting_points = []  # finding at most 2 points of intersection with the edge of the screen
         if line.a.x != line.b.x:  # not vertical line
-            if line.a.x < -w2 < line.b.x or line.b.x < -w2 < line.a.x:  # left y-axis
-                k = inv_lerp(line.a.x, line.b.x, -w2)
+            if line.a.x < left_bound <= line.b.x or line.b.x < left_bound <= line.a.x:  # left y-axis
+                k = inv_lerp(line.a.x, line.b.x, left_bound)
                 y = lerp(line.a.y, line.b.y, k)
-                if -h2 <= y <= h2:
+                if bottom_bound <= y <= top_bound:
                     color = lerp(line.a.color, line.b.color, k)
-                    intersecting_points.append(Point2D(-w2, y, color.round()))
+                    intersecting_points.append(Point2D(left_bound, y, color.round()))
 
-            if line.a.x < w2 < line.b.x or line.b.x < w2 < line.a.x:  # right y-axis
-                k = inv_lerp(line.a.x, line.b.x, w2)
+            if line.a.x <= right_bound < line.b.x or line.b.x <= right_bound < line.a.x:  # right y-axis
+                k = inv_lerp(line.a.x, line.b.x, right_bound)
                 y = lerp(line.a.y, line.b.y, k)
-                if -h2 <= y <= h2:
+                if bottom_bound <= y <= top_bound:
                     color = lerp(line.a.color, line.b.color, k)
-                    intersecting_points.append(Point2D(w2, y, color.round()))
+                    intersecting_points.append(Point2D(right_bound, y, color.round()))
 
         if line.a.y != line.b.y:  # not horizontal line
-            if line.a.y < -h2 < line.b.y or line.b.y < -h2 < line.a.y:  # bottom x-axis
-                k = inv_lerp(line.a.y, line.b.y, -h2)
+            if line.a.y < bottom_bound <= line.b.y or line.b.y < bottom_bound <= line.a.y:  # bottom x-axis
+                k = inv_lerp(line.a.y, line.b.y, bottom_bound)
                 x = lerp(line.a.x, line.b.x, k)
-                if -w2 <= x <= w2:
+                if left_bound <= x <= right_bound:
                     color = lerp(line.a.color, line.b.color, k)
-                    intersecting_points.append(Point2D(x, -h2, color.round()))
+                    intersecting_points.append(Point2D(x, bottom_bound, color.round()))
 
-            if line.a.y < h2 < line.b.y or line.b.y < h2 < line.a.y:  # top x-axis
-                k = inv_lerp(line.a.y, line.b.y, h2)
+            if line.a.y <= top_bound < line.b.y or line.b.y <= top_bound < line.a.y:  # top x-axis
+                k = inv_lerp(line.a.y, line.b.y, top_bound)
                 x = lerp(line.a.x, line.b.x, k)
-                if -w2 <= x <= w2:
+                if left_bound <= x <= right_bound:
                     color = lerp(line.a.color, line.b.color, k)
-                    intersecting_points.append(Point2D(x, h2, color.round()))
+                    intersecting_points.append(Point2D(x, top_bound, color.round()))
 
         assert 0 <= len(intersecting_points) <= 2
 
@@ -434,7 +512,7 @@ class Screen:
             return Line2D(intersecting_points[0].__round__(), line.b)
 
     def in_bounds(self, point: Point2D):
-        return -(self.width >> 1) <= point.x < (self.width >> 1) and -(self.height >> 1) < point.y <= (self.height >> 1)
+        return -(self.width >> 1) <= point.x < (self.width >> 1) and -(self.height >> 1) <= point.y < (self.height >> 1)
 
     def center_pixel(self, point: Point2D):
         # up is positive y, right is positive x
@@ -470,8 +548,6 @@ class Camera:
         self.yaw = yaw
         self.roll = roll
 
-        self.direction: Vector = Vector(0, 0, 1)
-
         # lut values
         self.sin_pitch = math.sin(self.pitch)
         self.cos_pitch = math.cos(self.pitch)
@@ -479,15 +555,9 @@ class Camera:
         self.cos_yaw = math.cos(self.yaw)
         self.sin_roll = math.sin(self.roll)
         self.cos_roll = math.cos(self.roll)
-
-        self.change_direction()
         return
 
-    def change_direction(self):
-        #self.direction = self.rotate_pitch(self.direction)
-        #self.direction = self.rotate_yaw(self.direction)
-        #self.direction = self.rotate_roll(self.direction)
-
+    def update_lut(self):
         self.sin_pitch = math.sin(self.pitch)
         self.cos_pitch = math.cos(self.pitch)
         self.sin_yaw = math.sin(self.yaw)
@@ -500,18 +570,10 @@ class Camera:
         self.pitch += pitch
         self.yaw += yaw
         self.roll += roll
-        self.change_direction()
+        self.update_lut()
         return
 
-    """def rotate_point(self, p: Point3D) -> Point3D:
-        v = Vector(p.x, p.y, p.z)
-
-        x = v.dot(self.direction)
-        y = v.dot(Vector(-self.direction.z, self.direction.z, self.direction.x))
-        z = v.dot(Vector(-self.direction.y, self.direction.x, self.direction.z))
-        return Point3D(x, y, z, p.color)
-    """
-    def rotate_point1(self, p: Point3D) -> Point3D:
+    def rotate_point(self, p: Point3D) -> Point3D:
         # rotation matrix's yaw = y axis, pitch = x axis, roll = y axis
         p = self.rotate_roll(p)
         p = self.rotate_pitch(p)
@@ -538,25 +600,26 @@ class Camera:
         x = -p.x * self.cos_yaw - p.z * self.sin_yaw
         return Point3D(x, p.y, z, p.color)
 
-    def set_direction(self, direction: Vector):
-        self.direction = direction
+    def get_direction(self) -> Vector:
+        """Returns a unit vector pointing in the direction the camera is facing"""
+        #return Vector(math.cos(self.yaw) * math.cos(self.pitch),
+        #             math.sin(self.yaw) * math.cos(self.pitch),
+        #             math.sin(self.pitch))
 
-        self.yaw = math.atan2(self.direction.y, self.direction.x)
+        return Vector(math.cos(self.yaw) * math.cos(self.pitch),
+                      -math.sin(self.yaw) * math.cos(self.pitch),
+                      math.sin(self.pitch))
 
-        self.pitch = math.atan2(-self.direction.z, math.sqrt(self.direction.x ** 2 + self.direction.y ** 2))
+    def set_direction(self, direction_vector: Vector):
+        self.yaw = math.atan2(direction_vector.y, direction_vector.x)
 
-        self.roll = math.atan2(self.direction.x, self.direction.z)
+        self.pitch = math.atan2(-direction_vector.z, math.sqrt(direction_vector.x ** 2 + direction_vector.y ** 2))
 
-        self.sin_pitch = math.sin(self.pitch)
-        self.cos_pitch = math.cos(self.pitch)
-        self.sin_yaw = math.sin(self.yaw)
-        self.cos_yaw = math.cos(self.yaw)
-        self.sin_roll = math.sin(self.roll)
-        self.cos_roll = math.cos(self.roll)
+        self.roll = math.atan2(direction_vector.x, direction_vector.z)
         return
 
     def world_to_camera(self, p: Point3D) -> Point3D:
-        return self.rotate_point1(p - self.position)
+        return self.rotate_point(p - self.position)
 
     def behind_camera(self, p: Point3D) -> bool:
         return self.projector.behind_plane(self.world_to_camera(p))
@@ -652,7 +715,7 @@ def smt(camera: Camera, i):
 
     cube = Polygon([a, b, c, d, e, f, g, h], connections)
 
-    camera.rotate_pov(0, pi_div_by_50, 0)
+    camera.rotate_pov(pi_div_by_50/2, pi_div_by_50, 0)
     cube.render(camera)
     return
 
