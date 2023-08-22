@@ -2,7 +2,8 @@ import math
 from typing import Optional
 
 import pygame.draw
-from pygame import display, event, QUIT, time
+import pygame as pg
+
 
 # auxiliary functions
 
@@ -196,7 +197,7 @@ class Line2D:
                 p += dy << 1
 
             color += color_step
-        print(pixels)
+
         return pixels
 
     def pixels_old(self) -> set[Point2D]:
@@ -292,6 +293,10 @@ class Vector(Point3D):
     def __init__(self, x, y, z = 0):
         super().__init__(x, y, z)
         return
+
+    @staticmethod
+    def from_points(a: Point3D, b: Point3D) -> 'Vector':
+        return Vector(b.x - a.x, b.y - a.y, b.z - a.z)
 
     def dot(self, other: 'Vector') -> int|float:
         return self.x * other.x + self.y * other.y + self.z * other.z
@@ -417,7 +422,7 @@ class Polygon:
             except BehindCameraError:
                 continue
             lines.append(l2d)
-        print(lines)
+
         return lines
 
     def render(self, camera: 'Camera'):
@@ -448,12 +453,12 @@ class Screen:
         self.height = height
         self.pixel_size = pixel_size
         self.title = title
-        self.screen = display.set_mode((self.width * self.pixel_size, self.height * self.pixel_size))
-        display.set_caption(self.title)
+        self.screen = pg.display.set_mode((self.width * self.pixel_size, self.height * self.pixel_size))
+        pg.display.set_caption(self.title)
         return
 
     def update(self):
-        display.flip()
+        pg.display.flip()
         self.screen.fill((0, 0, 0))
         return
 
@@ -498,10 +503,10 @@ class Screen:
                     color = lerp(line.a.color, line.b.color, k)
                     intersecting_points.append(Point2D(x, top_bound, color.round()))
 
-        assert 0 <= len(intersecting_points) <= 2
-
-        if not self.in_bounds(line.a) and not self.in_bounds(line.b):
+        if len(intersecting_points) == 0 and not self.in_bounds(line.a) and not self.in_bounds(line.b):
             return None
+
+        assert 0 < len(intersecting_points) <= 2
 
         if len(intersecting_points) == 2:
             return Line2D(intersecting_points[0].__round__(), intersecting_points[1].__round__())
@@ -540,13 +545,13 @@ class Screen:
 # Camera Orientation
 
 class Camera:
-    def __init__(self, projector: 'Projector', position: Point3D = Point3D(0, 0, 0),
-                 pitch: float = 0, yaw: float = 0, roll: float = 0):
+    def __init__(self, projector: 'Projector', position: Point3D = Point3D(0, 0, 0), direction: Vector = Vector(0, 0, 1)):
         self.projector = projector
         self.position: Point3D = position
-        self.pitch = pitch
-        self.yaw = yaw
-        self.roll = roll
+        self.set_direction(direction)
+        self.pitch = 0
+        self.yaw = 0
+        self.roll = 0
 
         # lut values
         self.sin_pitch = math.sin(self.pitch)
@@ -573,6 +578,10 @@ class Camera:
         self.update_lut()
         return
 
+    def move(self, direction: Vector):
+        self.position += direction
+        return
+
     def rotate_point(self, p: Point3D) -> Point3D:
         # rotation matrix's yaw = y axis, pitch = x axis, roll = y axis
         p = self.rotate_roll(p)
@@ -597,7 +606,7 @@ class Camera:
 
         # when yaw = 0, z-axis is forward and x-axis is to the right
         z = -p.x * self.sin_yaw + p.z * self.cos_yaw
-        x = -p.x * self.cos_yaw - p.z * self.sin_yaw
+        x = p.x * self.cos_yaw + p.z * self.sin_yaw
         return Point3D(x, p.y, z, p.color)
 
     def get_direction(self) -> Vector:
@@ -616,6 +625,8 @@ class Camera:
         self.pitch = math.atan2(-direction_vector.z, math.sqrt(direction_vector.x ** 2 + direction_vector.y ** 2))
 
         self.roll = math.atan2(direction_vector.x, direction_vector.z)
+
+        self.update_lut()
         return
 
     def world_to_camera(self, p: Point3D) -> Point3D:
@@ -644,7 +655,6 @@ class Projector:    # default is orthographic projection
 
     def world_to_pixels(self, p: Point2D) -> Point2D:
         return Point2D(round(p.x * self.pixels_per_unit), round(p.y * self.pixels_per_unit), p.color)
-
 
     def intersect_line_camera(self, line: Line3D) -> Optional[Point3D]:
         """Returns the point where the line intersects the camera plane, or None if it doesn't intersect,
@@ -695,12 +705,34 @@ class PerspectiveProjector(Projector):
 
 
 
+# Constants
+
+class Settings:
+    def __init__(self, screen_width: int = 100, screen_height: int = 100, pixel_size: int = 8, fps: int = 10,
+                 fov: float = math.pi / 2, pixels_per_unit: int = 555, start_camera_pos: Point3D = Point3D(0, 0, 0),
+                 start_camera_dir: Vector = Vector(0, 0, 1), mouse_sensitivity: float = 0.1,
+                 scroll_sensitivity: float = 0.1, zoom_sensitivity: float = 0.1):
+        self.screen_width: int = screen_width
+        self.screen_height: int = screen_height
+        self.pixel_size: int = pixel_size
+        self.fps: int = fps
+        self.fov: float = fov
+        self.pixels_per_unit: int = pixels_per_unit
+        self.start_camera_pos: Point3D = start_camera_pos
+        self.start_camera_dir: Vector = start_camera_dir
+        self.mouse_sensitivity: float = mouse_sensitivity
+        self.scroll_sensitivity: float = scroll_sensitivity
+        self.zoom_sensitivity: float = zoom_sensitivity
+        return
+
 
 
 # Code
 
-def smt(camera: Camera, i):
-    pi_div_by_50 = 2 * math.pi / 100
+
+def smt(camera: Camera, dt: float):
+    yaw_speed = 0.1
+    forward_speed = 0.5
 
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
@@ -715,12 +747,13 @@ def smt(camera: Camera, i):
 
     cube = Polygon([a, b, c, d, e, f, g, h], connections)
 
-    camera.rotate_pov(pi_div_by_50/2, pi_div_by_50, 0)
+    #camera.rotate_pov(0, yaw_speed * dt, 0)
+    #camera.move(0, 0, forward_speed * dt)
     cube.render(camera)
     return
 
 
-def debug(camera: Camera, i):
+def debug(camera: Camera, dt: float):
     pi_div_by_5 = math.pi * 2 / 50
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
@@ -732,7 +765,7 @@ def debug(camera: Camera, i):
     quad = Polygon([a, b, c, d], connections)
     triangle = Polygon([a, b, c], [(0, 1), (0, 2), (1, 2)])
 
-    camera.rotate_pov(0, pi_div_by_5, 0)
+    #camera.rotate_pov(0, pi_div_by_5, 0)
     # camera.yaw = i * pi_div_by_5
     # quad.render(projector)
     triangle.render(camera)
@@ -740,37 +773,111 @@ def debug(camera: Camera, i):
     return
 
 
+def motion(config: Settings, camera: Camera, dt: float):
+    screen_center = [(config.screen_width * config.pixel_size) >> 1, (config.screen_height * config.pixel_size) >> 1]
+    ctrl_pressed = False
+    pitch = 0
+    yaw = 0
+    roll = 0
+    movement = Vector(0, 0, 0)
+
+    keys = pg.key.get_pressed()
+    if keys[pg.K_LCTRL] or keys[pg.K_RCTRL]:
+        ctrl_pressed = True
+    if keys[pg.K_w]:
+        movement.z += 1
+    if keys[pg.K_a]:
+        movement.x -= 1
+    if keys[pg.K_s]:
+        movement.z -= 1
+    if keys[pg.K_d]:
+        movement.x += 1
+
+    for e in pg.event.get():
+        if e.type == pg.QUIT or (e.type == pg.KEYDOWN and e.key == pg.K_ESCAPE):
+            pg.quit()
+            return True
+
+        elif e.type == pg.MOUSEMOTION:
+            relative_pos = pg.mouse.get_rel()
+            pitch += (-relative_pos[1] / config.pixels_per_unit) * config.mouse_sensitivity
+            yaw += (-relative_pos[0] / config.pixels_per_unit) * config.mouse_sensitivity
+            pygame.mouse.set_pos(screen_center)
+            buttons = pg.mouse.get_pressed()
+            if buttons[0]:  # TODO: Add mouse button functionality
+                pass
+            elif buttons[1]:
+                pass
+            elif buttons[2]:
+                pass
+
+        elif e.type == pg.MOUSEWHEEL:
+            if ctrl_pressed and isinstance(camera.projector, PerspectiveProjector):
+                camera.projector.fov += e.y * config.zoom_sensitivity
+                camera.projector.focal_length = camera.projector.get_focal_length(fov=camera.projector.fov)
+            else:
+                roll = (-e.y if e.flipped else e.y) * config.scroll_sensitivity
+
+    camera.rotate_pov(pitch, yaw, roll)
+    movement = movement.rotate_yaw(camera.yaw)
+
+    # up down doesn't depend on camera rotation
+    if keys[pg.K_SPACE]:
+        movement.y += 1
+    if keys[pg.K_LSHIFT] or keys[pg.K_RSHIFT]:
+        movement.y -= 1
+
+    movement *= dt
+    camera.move(movement)
+
+    return False
+
+
+def main_loop(config: Settings, screen: Screen):
+    projector = PerspectiveProjector(screen, config.pixels_per_unit, config.fov)
+    camera = Camera(projector, config.start_camera_pos)
+
+    dt = 1 / config.fps
+    clock = pg.time.Clock()
+    while True:
+        if motion(config, camera, dt):
+            break
+
+        smt(camera, dt)
+        # debug(camera, dt)
+
+        screen.update()
+        dt = clock.tick(config.fps) / 1000
+        print(f'fps = {round(1 / dt, 2)}')
+    return
+
+
 def main():
-    screen_width = 100  # in pixels
-    screen_height = 100  # in pixels
-    pixel_size = 8
-    fps = 10
+    screen_width = 200  # in pixels
+    screen_height = 200  # in pixels
+    pixel_size = 4
+    fps = 15
+    fov = math.pi / 2
+    pixels_per_unit = 555
+    start_camera_pos = Point3D(0, 0, 0)
+    start_camera_dir = Vector(-1, 0, 0)
+    mouse_sensitivity = 2
+    scroll_sensitivity = 0.1
+    zoom_sensitivity = 0.1
+
+    config = Settings(screen_width, screen_height, pixel_size, fps, fov, pixels_per_unit, start_camera_pos,
+                        start_camera_dir, mouse_sensitivity, scroll_sensitivity, zoom_sensitivity)
 
     # check to see if screen gets too big
-    if screen_width * pixel_size > 1920 or screen_height * pixel_size > 1080:
+    if config.screen_width * pixel_size > 1920 or config.screen_height * pixel_size > 1080:
         print('Screen size too big')
         exit(1)
 
-    screen = Screen(screen_width, screen_height, pixel_size, '3D Renderer')
-    projector = PerspectiveProjector(screen, 555, math.pi / 2)
-    camera = Camera(projector, Point3D(0, 0, 0), 0, 0, 0)
+    screen = Screen(config.screen_width, config.screen_height, config.pixel_size, '3D Renderer')
+    pg.mouse.set_visible(False)
 
-    iteration_n = 0
-    clock = time.Clock()
-    running = True
-    while running:
-        for e in event.get():
-            if e.type == QUIT:
-                running = False
+    main_loop(config, screen)
 
-        smt(camera, iteration_n)
-        # debug(camera, iteration_n)
-
-        print(iteration_n)
-
-        screen.update()
-        iteration_n += 1/fps
-        clock.tick(fps)
     return None
 
 
