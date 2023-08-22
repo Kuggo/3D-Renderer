@@ -22,11 +22,19 @@ def clamp(a, b, v):
 
 # Exceptions
 
+class ScreenSizeError(Exception):
+    pass
+
+
 class BehindCameraError(Exception):
     pass
 
 
 class NotVisibleError(Exception):
+    pass
+
+
+class InvalidPolygonError(Exception):
     pass
 
 
@@ -99,8 +107,20 @@ class Point2D:
     def __ne__(self, other: 'Point2D'):
         return not self == other
 
+    def __lt__(self, other: 'Point2D'):
+        return self.y < other.y or (self.y == other.y and self.x < other.x)
+
+    def __le__(self, other: 'Point3D'):
+        return self < other or self == other
+
+    def __gt__(self, other: 'Point3D'):
+        return not self <= other
+
+    def __ge__(self, other: 'Point3D'):
+        return not self < other
+
     def __hash__(self):
-        return hash((self.x, self.y, self.color))
+        return hash((self.x, self.y))
 
     def __repr__(self):
         return f"({self.x}, {self.y})"
@@ -141,12 +161,22 @@ class Point2D:
 
 class Line2D:
     def __init__(self, a: Point2D, b: Point2D):
-        self.a: Point2D = a
-        self.b: Point2D = b
+        if a < b:
+            self.a: Point2D = a
+            self.b: Point2D = b
+        else:
+            self.a: Point2D = b
+            self.b: Point2D = a
         return
 
     def __repr__(self):
         return f"({self.a}, {self.b})"
+
+    def __eq__(self, other: 'Line2D'):
+        return (self.a == other.a and self.b == other.b) or (self.a == other.b and self.b == other.a)
+
+    def __hash__(self):
+        return hash((self.a, self.b))
 
     def length(self) -> float:
         return self.a.distance(self.b)
@@ -257,8 +287,24 @@ class Point3D(Point2D):
     def __eq__(self, other: 'Point3D'):
         return self.x == other.x and self.y == other.y and self.z == other.z
 
+    def __hash__(self):
+        return hash((self.x, self.y, self.z))
+
     def __ne__(self, other: 'Point3D'):
         return not self == other
+
+    def __lt__(self, other: 'Point3D'):
+        return self.x < other.x or (self.x == other.x and self.y < other.y) or \
+            (self.x == other.x and self.y == other.y and self.z < other.z)
+
+    def __le__(self, other: 'Point3D'):
+        return self < other or self == other
+
+    def __gt__(self, other: 'Point3D'):
+        return not self <= other
+
+    def __ge__(self, other: 'Point3D'):
+        return not self < other
 
     def __add__(self, other: 'Point3D'):
         return Point3D(self.x + other.x, self.y + other.y, self.z + other.z, self.color)
@@ -298,13 +344,16 @@ class Vector(Point3D):
     def from_points(a: Point3D, b: Point3D) -> 'Vector':
         return Vector(b.x - a.x, b.y - a.y, b.z - a.z)
 
-    def dot(self, other: 'Vector') -> int|float:
+    def dot(self, other: 'Point3D') -> int|float:
         return self.x * other.x + self.y * other.y + self.z * other.z
 
     def cross(self, other: 'Vector') -> 'Vector':
         return Vector(self.y * other.z - self.z * other.y,
                       self.z * other.x - self.x * other.z,
                       self.x * other.y - self.y * other.x)
+
+    def colinear(self, other: 'Vector') -> bool:
+        return abs(self.dot(other)) < 0.0000001
 
     def normalize(self) -> 'Vector':
         return self * (1 / self.magnitude())
@@ -339,12 +388,22 @@ class Vector(Point3D):
 
 class Line3D:
     def __init__(self, a: Point3D, b: Point3D):
-        self.a: Point3D = a
-        self.b: Point3D = b
+        if a < b:
+            self.a: Point3D = a
+            self.b: Point3D = b
+        else:
+            self.a: Point3D = b
+            self.b: Point3D = a
         return
 
     def __repr__(self):
         return f"({self.a}, {self.b})"
+
+    def __eq__(self, other: 'Line3D'):
+        return (self.a == other.a and self.b == other.b) or (self.a == other.b and self.b == other.a)
+
+    def __hash__(self):
+        return hash((self.a, self.b))
 
     def length(self) -> float:
         return self.a.distance(self.b)
@@ -386,14 +445,124 @@ class Line3D:
 
 
 class Polygon:
-    def __init__(self, points: list[Point3D], lines: list[tuple[int, int]]):
+    def __init__(self, points: list[Point3D], lines: list[tuple[int, int]] = None):
+        """points must be in the winding order of the polygon.
+        The winding order is clock wise when looking from the visible face"""
+        if lines is None:
+            self.lines = self.generate_lines(points)
+        else:
+            self.lines: list[Line3D] = self.convert_lines(points, lines)
+
+        if not self.validate(points, lines):
+            raise InvalidPolygonError
         self.points: list[Point3D] = points
-        self.lines = self.lines(points, lines)
-        self.point_pairs: list[tuple[int, int]] = lines
+
         return
 
     def __repr__(self):
         return f"{self.lines}"
+
+    @staticmethod
+    def convert_lines(points, point_pairs) -> list[Line3D]:
+        lines = []
+        for t in point_pairs:
+            lines.append(Line3D(points[t[0]], points[t[1]]))
+
+        return lines
+
+    @staticmethod
+    def validate(points: list[Point3D], lines) -> bool:
+        """checks if the polygon is valid"""
+        if len(points) < 3:
+            return False
+
+        if lines is None:
+            return True
+
+        if len(points) != len(lines):
+            return False
+
+        point_count = [0] * len(points)
+        for t in lines:
+            point_count[t[0]] += 1
+            point_count[t[1]] += 1
+
+        for i in point_count:
+            if i != 2:
+                return False
+
+        normal = Vector.from_points(points[1], points[0]).cross(Vector.from_points(points[1], points[2]))
+        for point in points[3:]:
+            distance = normal.dot(point) - normal.dot(points[0])
+            if abs(distance) > 0.0000001:
+                return False
+        return True
+
+    @staticmethod
+    def generate_lines(points) -> list[Line3D]:
+        """generates the lines from the points"""
+        lines = []
+        for i in range(len(points)):
+            lines.append(Line3D(points[i], points[(i + 1) % len(points)]))
+
+        return lines
+
+    def normal(self) -> Vector:
+        """returns the normal vector of the polygon"""
+        v1 = Vector.from_points(self.points[1], self.points[0])
+        v2 = Vector.from_points(self.points[1], self.points[2])
+        return v1.cross(v2)
+
+    def pixels(self, camera: 'Camera') -> set[Point2D]:
+        """Returns a set of all pixels that make up the polygon's edges"""
+        pixels = set()
+        for line in self.project(camera):
+            l_culled = camera.projector.screen.line_culling(line)
+            if l_culled is None:
+                continue
+            pixels.update(l_culled.pixels())
+
+        return pixels
+
+    def project(self, camera: 'Camera') -> set[Line2D]:
+        lines = set()
+        for line in self.lines:
+            try:
+                l2d = line.project(camera)
+            except BehindCameraError:
+                continue
+            lines.add(l2d)
+
+        return lines
+
+    def facing_camera(self, camera: 'Camera') -> bool:
+        """checks if the polygon is facing the camera"""
+        normal = self.normal()
+        camera_vector = Vector.from_points(self.points[0], camera.position)
+        return normal.dot(camera_vector) < 0
+
+    def render(self, camera: 'Camera'):
+        """Projects and draws the polygon on the screen"""
+        if not self.facing_camera(camera):
+            return
+        pixels = self.pixels(camera)
+        camera.projector.screen.draw_pixels(pixels)
+        return
+
+
+class Triangle(Polygon):
+    pass
+
+
+class Quad(Polygon):
+    pass
+
+
+class SolidOld:
+    def __init__(self, points: list[Point3D], lines: list[tuple[int, int]]):
+        self.points: list[Point3D] = points
+        self.lines: list[Line3D] = self.lines(points, lines)
+        return
 
     @staticmethod
     def lines(points, point_pairs) -> list[Line3D]:
@@ -414,14 +583,14 @@ class Polygon:
 
         return pixels
 
-    def project(self, camera: 'Camera') -> list[Line2D]:
-        lines = []
+    def project(self, camera: 'Camera') -> set[Line2D]:
+        lines = set()
         for line in self.lines:
             try:
                 l2d = line.project(camera)
             except BehindCameraError:
                 continue
-            lines.append(l2d)
+            lines.add(l2d)
 
         return lines
 
@@ -432,16 +601,48 @@ class Polygon:
         return
 
 
-class Triangle(Polygon):
-    pass
-
-
-class Quad(Polygon):
-    pass
-
-
 class Solid:
-    pass
+    def __init__(self, polygons: list[Polygon]):
+        self.polygons = polygons
+        return
+
+    def lines(self, camera: 'Camera') -> set[Line3D]:
+        """Returns a set of all lines that make up the solid's edges"""
+        lines = set()
+        for polygon in self.polygons:
+            if polygon.facing_camera(camera):
+                lines.update(polygon.lines)
+
+        return lines
+
+    def pixels(self, camera: 'Camera') -> set[Point2D]:
+        """Returns a set of all pixels that make up the polygon's edges"""
+        pixels = set()
+        for line in self.project(camera):
+            pixels.update(line.pixels())
+
+        return pixels
+
+    def project(self, camera: 'Camera') -> set[Line2D]:
+        lines = set()
+        for line in self.lines(camera):
+            try:
+                l2d = line.project(camera)
+            except BehindCameraError:
+                continue
+
+            l_culled = camera.projector.screen.line_culling(l2d)
+            if l_culled is None:
+                continue
+            lines.add(l_culled)
+        return lines
+
+    def render(self, camera: 'Camera'):
+        """Projects and draws the solid on the screen"""
+        pixels = self.pixels(camera)
+        camera.projector.screen.draw_pixels(pixels)
+        return
+
 
 
 
@@ -548,10 +749,10 @@ class Camera:
     def __init__(self, projector: 'Projector', position: Point3D = Point3D(0, 0, 0), direction: Vector = Vector(0, 0, 1)):
         self.projector = projector
         self.position: Point3D = position
-        self.set_direction(direction)
         self.pitch = 0
         self.yaw = 0
         self.roll = 0
+        self.set_direction(direction)
 
         # lut values
         self.sin_pitch = math.sin(self.pitch)
@@ -584,9 +785,9 @@ class Camera:
 
     def rotate_point(self, p: Point3D) -> Point3D:
         # rotation matrix's yaw = y axis, pitch = x axis, roll = y axis
+        p = self.rotate_yaw(p)  # yaw needs to go first, but tbh idk why
         p = self.rotate_roll(p)
         p = self.rotate_pitch(p)
-        p = self.rotate_yaw(p)
         return p
 
     def rotate_roll(self, p: Point3D):
@@ -622,9 +823,12 @@ class Camera:
     def set_direction(self, direction_vector: Vector):
         self.yaw = math.atan2(direction_vector.y, direction_vector.x)
 
-        self.pitch = math.atan2(-direction_vector.z, math.sqrt(direction_vector.x ** 2 + direction_vector.y ** 2))
+        self.pitch = -math.asin(direction_vector.y)
 
-        self.roll = math.atan2(direction_vector.x, direction_vector.z)
+        self.roll = math.atan2(
+            direction_vector.x * math.sin(self.pitch) + direction_vector.y * math.cos(self.pitch) - direction_vector.z * math.sin(self.pitch) * math.sin(self.yaw),
+            direction_vector.x * math.cos(self.yaw) + direction_vector.z * math.sin(self.yaw)
+        )
 
         self.update_lut()
         return
@@ -730,10 +934,7 @@ class Settings:
 # Code
 
 
-def smt(camera: Camera, dt: float):
-    yaw_speed = 0.1
-    forward_speed = 0.5
-
+def smt(camera: Camera):
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
     c = Point3D(1, -1, 2, Color(0, 0, 255))
@@ -743,17 +944,18 @@ def smt(camera: Camera, dt: float):
     g = Point3D(1, 1, 2, Color(0, 255, 0))
     h = Point3D(1, 1, 4, Color(255, 0, 0))
 
-    connections = [(0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3), (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)]
-
-    cube = Polygon([a, b, c, d, e, f, g, h], connections)
-
-    #camera.rotate_pov(0, yaw_speed * dt, 0)
-    #camera.move(0, 0, forward_speed * dt)
+    front = Polygon([e, g, c, a])
+    back = Polygon([b, d, h, f])
+    left = Polygon([a, b, f, e])
+    right = Polygon([g, h, d, c])
+    top = Polygon([e, f, h, g])
+    bottom = Polygon([c, d, b, a])
+    cube = Solid([front, back, left, right, top, bottom])
     cube.render(camera)
     return
 
 
-def debug(camera: Camera, dt: float):
+def debug(camera: Camera):
     pi_div_by_5 = math.pi * 2 / 50
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
@@ -835,7 +1037,7 @@ def motion(config: Settings, camera: Camera, dt: float):
 
 def main_loop(config: Settings, screen: Screen):
     projector = PerspectiveProjector(screen, config.pixels_per_unit, config.fov)
-    camera = Camera(projector, config.start_camera_pos)
+    camera = Camera(projector, config.start_camera_pos, config.start_camera_dir)
 
     dt = 1 / config.fps
     clock = pg.time.Clock()
@@ -843,7 +1045,7 @@ def main_loop(config: Settings, screen: Screen):
         if motion(config, camera, dt):
             break
 
-        smt(camera, dt)
+        smt(camera)
         # debug(camera, dt)
 
         screen.update()
@@ -860,7 +1062,7 @@ def main():
     fov = math.pi / 2
     pixels_per_unit = 555
     start_camera_pos = Point3D(0, 0, 0)
-    start_camera_dir = Vector(-1, 0, 0)
+    start_camera_dir = Vector(0, 0, 1)
     mouse_sensitivity = 2
     scroll_sensitivity = 0.1
     zoom_sensitivity = 0.1
@@ -870,8 +1072,7 @@ def main():
 
     # check to see if screen gets too big
     if config.screen_width * pixel_size > 1920 or config.screen_height * pixel_size > 1080:
-        print('Screen size too big')
-        exit(1)
+        raise ScreenSizeError('Screen size too big')
 
     screen = Screen(config.screen_width, config.screen_height, config.pixel_size, '3D Renderer')
     pg.mouse.set_visible(False)
