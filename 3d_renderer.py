@@ -1,6 +1,6 @@
 import math
 from typing import Optional
-
+from os import path as os_path
 import pygame.draw
 import pygame as pg
 
@@ -17,6 +17,78 @@ def inv_lerp(a, b, v):
 
 def clamp(a, b, v):
     return min(b, max(a, v))
+
+def load_object_file(file_name) -> 'Mesh':
+    file_path = os_path.join("objects", file_name)
+    points: list[Point3D] = []
+    faces = []
+
+    with open(file_path, 'r') as obj_file:
+        for line in obj_file:
+            tokens = line.strip().split()
+
+            if len(tokens) == 0:
+                continue
+
+            if tokens[0] == 'v':
+                assert len(tokens) >= 3
+                x, y, z = float(tokens[1]), float(tokens[2]), float(tokens[3])
+
+                if len(tokens) == 4:
+                    points.append(Point3D(x, y, z))
+                    continue
+
+                w = float(tokens[4])
+
+                if len(tokens) == 5:
+                    continue
+
+                r, g, b = float(tokens[5]), float(tokens[6]), float(tokens[7])
+                color = (Color(r, g, b) * 255).round()
+                points.append(Point3D(x, y, z, color))
+
+            elif tokens[0] == 'vt':     # TODO implement the rest of the file specifications
+                pass
+
+            elif tokens[0] == 'vn':
+                pass
+
+            elif tokens[0] == 'f':
+                face_points = []
+                for vertex in tokens[1:]:
+                    print(tokens)
+                    indices = []
+                    for i in vertex.split('/'):
+                        indices.append(int(i))
+
+                    if len(indices) == 0:
+                        continue
+                    vertex_index = indices[0] - 1 if indices[0] > 0 else indices[0]
+
+                    if len(indices) == 1:
+                        face_points.append(points[vertex_index])
+                        continue
+                    texture_index = indices[1] - 1 if indices[1] > 0 else indices[1]
+
+                    if len(indices) == 2:
+                        face_points.append(points[vertex_index])
+                        continue
+                    normal_index = indices[2] - 1 if indices[2] > 0 else indices[2]
+                    face_points.append(points[vertex_index])
+                    continue
+
+                if len(face_points) < 3:
+                    raise InvalidPolygonError("A polygon must have at least 3 vertices")
+                if len(face_points) == 3:
+                    face = Triangle(face_points)
+                elif len(face_points) == 4:
+                    face = Quad(face_points)
+                else:
+                    face = Polygon(face_points)
+                faces.append(face)
+
+    mesh = Mesh(faces)
+    return mesh
 
 
 
@@ -535,15 +607,15 @@ class Polygon:
 
         return lines
 
-    def facing_camera(self, camera: 'Camera') -> bool:
+    def facing_camera(self, camera: 'Camera') -> float:
         """checks if the polygon is facing the camera"""
         normal = self.normal()
         camera_vector = Vector.from_points(self.points[0], camera.position)
-        return normal.dot(camera_vector) < 0
+        return normal.dot(camera_vector)
 
     def render(self, camera: 'Camera'):
         """Projects and draws the polygon on the screen"""
-        if not self.facing_camera(camera):
+        if self.facing_camera(camera) > 0:
             return
         pixels = self.pixels(camera)
         camera.projector.screen.draw_pixels(pixels)
@@ -551,11 +623,45 @@ class Polygon:
 
 
 class Triangle(Polygon):
-    pass
+    def __init__(self, points: list[Point3D]):
+        super().__init__(points)
+        return
+
+    def pixels(self, camera: 'Camera') -> set[Point2D]:     # TODO change the implementation to draw the face and not just edges
+        """Returns a set of all pixels that make up the triangle's edges"""
+        pixels = set()
+        for line in self.project(camera):
+            l_culled = camera.projector.screen.line_culling(line)
+            if l_culled is None:
+                continue
+            pixels.update(l_culled.pixels())
+
+        return pixels
+
+    def project(self, camera: 'Camera') -> set[Line2D]:
+        lines = set()
+        for line in self.lines:
+            try:
+                l2d = line.project(camera)
+            except BehindCameraError:
+                continue
+            lines.add(l2d)
+
+        return lines
+
+    def render(self, camera: 'Camera'):
+        """Projects and draws the triangle on the screen"""
+        if self.facing_camera(camera) > 0:
+            return
+        pixels = self.pixels(camera)
+        camera.projector.screen.draw_pixels(pixels)
+        return
 
 
 class Quad(Polygon):
-    pass
+    def __init__(self, points: list[Point3D]):
+        super().__init__(points)
+        return
 
 
 class SolidOld:
@@ -601,16 +707,19 @@ class SolidOld:
         return
 
 
-class Solid:
+class Mesh:
     def __init__(self, polygons: list[Polygon]):
         self.polygons = polygons
         return
+
+    def __repr__(self):
+        return f"{self.polygons}"
 
     def lines(self, camera: 'Camera') -> set[Line3D]:
         """Returns a set of all lines that make up the solid's edges"""
         lines = set()
         for polygon in self.polygons:
-            if polygon.facing_camera(camera):
+            if polygon.facing_camera(camera) < 0:
                 lines.update(polygon.lines)
 
         return lines
@@ -934,7 +1043,7 @@ class Settings:
 # Code
 
 
-def smt(camera: Camera):
+def get_rgb_cube() -> Mesh:
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
     c = Point3D(1, -1, 2, Color(0, 0, 255))
@@ -950,13 +1059,11 @@ def smt(camera: Camera):
     right = Polygon([g, h, d, c])
     top = Polygon([e, f, h, g])
     bottom = Polygon([c, d, b, a])
-    cube = Solid([front, back, left, right, top, bottom])
-    cube.render(camera)
-    return
+    cube = Mesh([front, back, left, right, top, bottom])
+    return cube
 
 
-def debug(camera: Camera):
-    pi_div_by_5 = math.pi * 2 / 50
+def debug_triangle() -> Polygon:
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
     c = Point3D(1, -1, 2, Color(0, 0, 255))
@@ -966,12 +1073,12 @@ def debug(camera: Camera):
 
     quad = Polygon([a, b, c, d], connections)
     triangle = Polygon([a, b, c], [(0, 1), (0, 2), (1, 2)])
+    return triangle
 
-    #camera.rotate_pov(0, pi_div_by_5, 0)
-    # camera.yaw = i * pi_div_by_5
-    # quad.render(projector)
-    triangle.render(camera)
 
+def render_scene(camera: Camera, scene: list[Mesh]):
+    for mesh in scene:
+        mesh.render(camera)
     return
 
 
@@ -1039,14 +1146,18 @@ def main_loop(config: Settings, screen: Screen):
     projector = PerspectiveProjector(screen, config.pixels_per_unit, config.fov)
     camera = Camera(projector, config.start_camera_pos, config.start_camera_dir)
 
+    # mesh = load_object_file('cube2.obj')
+    mesh = load_object_file('teapot.obj')
+    # mesh = get_rgb_cube()
+
     dt = 1 / config.fps
     clock = pg.time.Clock()
     while True:
         if motion(config, camera, dt):
             break
 
-        smt(camera)
-        # debug(camera, dt)
+        render_scene(camera, [mesh])
+        # debug()
 
         screen.update()
         dt = clock.tick(config.fps) / 1000
