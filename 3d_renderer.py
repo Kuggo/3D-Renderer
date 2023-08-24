@@ -5,7 +5,16 @@ import pygame.draw
 import pygame as pg
 
 
+# constants
+
+fp_tolerance = 1e-6
+
+
 # auxiliary functions
+
+
+def fp_equals(a, b) -> bool:
+    return abs(a - b) < fp_tolerance
 
 def lerp(a, b, t):
     return a + (b - a) * t
@@ -17,6 +26,7 @@ def inv_lerp(a, b, v):
 
 def clamp(a, b, v):
     return min(b, max(a, v))
+
 
 def load_object_file(file_name) -> 'Mesh':
     file_path = os_path.join("objects", file_name)
@@ -91,6 +101,65 @@ def load_object_file(file_name) -> 'Mesh':
     return mesh
 
 
+def change_plane(points: list['Point3D'], normal: 'Vector', offset: 'Point3D') -> list['Point3D']:
+    new_points = []
+    for point in points:
+        new_points.append(normal.use_as_reference(point) + offset)
+
+    return new_points
+
+
+def circle(radius, color, resolution: int = 8, cw=True) -> list['Point3D']:
+    """Returns a list of points that make up a circle in the x y plane, centered at center"""
+    if fp_equals(radius, 0):
+        return [Point3D(0, 0, 0, color)]
+
+    side_num = 4 * resolution
+    angle_step = 2 * math.pi / side_num
+    direction = -1 if cw else 1
+    points = []
+
+    angle = 0
+    i = 0
+    while i < side_num:
+        x = direction * math.sin(angle) * radius
+        y = math.cos(angle) * radius
+        points.append(Point3D(x, y, 0, color))
+        angle += angle_step
+        i += 1
+        continue
+
+    return points
+
+
+def create_polygons(prev_points, points, opposite_ways=False) -> list['Polygon']:
+    def index(l, j):
+        nonlocal div
+        return l[round(j * len(l) / div) % len(l)]
+
+    polygons = []
+    div = max(len(points), len(prev_points))
+    for i in range(0, max(len(points), len(prev_points)), 1):
+        if opposite_ways:
+            a = index(points, len(points)//2 - i)
+            b = index(points, len(points)//2 - i - 1)
+        else:
+            a = index(points, i)
+            b = index(points, i + 1)
+
+        c = index(prev_points, i + 1)
+        d = index(prev_points, i)
+
+        if c == d:
+            polygons.append(Triangle([a, b, c]))
+        elif a == b:
+            polygons.append(Triangle([c, d, a]))
+        else:
+            polygons.append(Quad([a, b, c, d]))
+
+    return polygons
+
+
 
 # Exceptions
 
@@ -123,6 +192,10 @@ class Color:
     @staticmethod
     def from_tuple(t: tuple[int, int, int]):
         return Color(t[0], t[1], t[2])
+
+    @staticmethod
+    def from_hex(hex_str: str):
+        return Color(int(hex_str[1:3], 16), int(hex_str[3:5], 16), int(hex_str[5:7], 16))
 
     def tuple(self):
         return clamp(0, 255, round(self.r)), clamp(0, 255, round(self.g)), clamp(0, 255, round(self.b))
@@ -211,6 +284,9 @@ class Point2D:
 
     def __sub__(self, other: 'Point2D'):
         return Point2D(self.x - other.x, self.y - other.y, self.color)
+
+    def __neg__(self):
+        return Point2D(-self.x, -self.y, self.color)
 
     def __mul__(self, other: int | float):
         return Point2D(self.x * other, self.y * other, self.color)
@@ -354,7 +430,7 @@ class Point3D(Point2D):
         return
 
     def __repr__(self):
-        return f"({self.x}, {self.y}, {self.z})"
+        return f"({self.x:.4f}, {self.y:.4f}, {self.z:.4f})"
 
     def __eq__(self, other: 'Point3D'):
         return self.x == other.x and self.y == other.y and self.z == other.z
@@ -384,17 +460,45 @@ class Point3D(Point2D):
     def __sub__(self, other: 'Point3D'):
         return Point3D(self.x - other.x, self.y - other.y, self.z - other.z, self.color)
 
+    def __neg__(self):
+        return Point3D(-self.x, -self.y, -self.z, self.color)
+
     def __mul__(self, other: int|float):
         return Point3D(self.x * other, self.y * other, self.z * other, self.color)
 
     def __round__(self, n=None):
         return Point3D(round(self.x, n), round(self.y, n), round(self.z, n))
 
+    def fp_equals(self, other: 'Point3D'):
+        return abs(self.x - other.x) < fp_tolerance and abs(self.y - other.y) < fp_tolerance and \
+            abs(self.z - other.z) < fp_tolerance
+
     def distance(self, other: 'Point3D') -> int | float:
         return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2 + (self.z - other.z) ** 2) ** 0.5
 
     def manhattan_distance(self, other: 'Point3D') -> int | float:
         return abs(self.x - other.x) + abs(self.y - other.y) + abs(self.z - other.z)
+
+    def rotate_pitch(self, pitch: float) -> 'Point3D':
+        cos_pitch = math.cos(pitch)
+        sin_pitch = math.sin(pitch)
+        y = self.y * cos_pitch - self.z * sin_pitch
+        z = self.y * sin_pitch + self.z * cos_pitch
+        return Point3D(self.x, y, z, self.color)
+
+    def rotate_yaw(self, yaw: float) -> 'Point3D':
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        x = self.x * cos_yaw - self.z * sin_yaw
+        z = self.x * sin_yaw + self.z * cos_yaw
+        return Point3D(x, self.y, z, self.color)
+
+    def rotate_roll(self, roll: float) -> 'Point3D':
+        cos_roll = math.cos(roll)
+        sin_roll = math.sin(roll)
+        x = self.x * cos_roll - self.y * sin_roll
+        y = self.x * sin_roll + self.y * cos_roll
+        return Point3D(x, y, self.z, self.color)
 
     def project(self, camera: 'Camera') -> 'Point2D':
         camera_p = camera.world_to_camera(self)
@@ -408,13 +512,36 @@ class Point3D(Point2D):
 
 
 class Vector(Point3D):
-    def __init__(self, x, y, z = 0):
+    def __init__(self, x, y, z):
         super().__init__(x, y, z)
         return
 
     @staticmethod
     def from_points(a: Point3D, b: Point3D) -> 'Vector':
         return Vector(b.x - a.x, b.y - a.y, b.z - a.z)
+
+    def get_polar(self) -> tuple[int|float, int|float]:
+        """Returns the polar coordinates of the vector, pitch and yaw"""
+        pitch = math.asin(self.y / self.magnitude())
+        yaw = math.atan2(self.x, self.z)
+        return pitch, yaw
+
+    def use_as_reference(self, point: Point3D) -> Point3D:
+        """Returns the vector projected on the other vector"""
+        pitch, yaw = self.get_polar()
+        return point.rotate_pitch(-pitch).rotate_yaw(-yaw)
+
+    def __add__(self, other):
+        return Vector(self.x + other.x, self.y + other.y, self.z + other.z)
+
+    def __sub__(self, other):
+        return Vector(self.x - other.x, self.y - other.y, self.z - other.z)
+
+    def __mul__(self, other: int|float):
+        return Vector(self.x * other, self.y * other, self.z * other)
+
+    def __neg__(self):
+        return Vector(-self.x, -self.y, -self.z)
 
     def dot(self, other: 'Point3D') -> int|float:
         return self.x * other.x + self.y * other.y + self.z * other.z
@@ -425,7 +552,7 @@ class Vector(Point3D):
                       self.x * other.y - self.y * other.x)
 
     def colinear(self, other: 'Vector') -> bool:
-        return abs(self.dot(other)) < 0.0000001
+        return fp_equals(self.dot(other), 0)
 
     def normalize(self) -> 'Vector':
         return self * (1 / self.magnitude())
@@ -435,27 +562,6 @@ class Vector(Point3D):
 
     def angle(self, other: 'Vector') -> int|float:
         return math.acos(self.dot(other) / (self.magnitude() * other.magnitude()))
-
-    def rotate_pitch(self, pitch: float):
-        cos_pitch = math.cos(pitch)
-        sin_pitch = math.sin(pitch)
-        x = self.x * cos_pitch - self.z * sin_pitch
-        z = self.x * sin_pitch + self.z * cos_pitch
-        return Vector(x, self.y, z)
-
-    def rotate_yaw(self, yaw: float):
-        cos_yaw = math.cos(yaw)
-        sin_yaw = math.sin(yaw)
-        x = self.x * cos_yaw - self.z * sin_yaw
-        z = self.x * sin_yaw + self.z * cos_yaw
-        return Vector(x, self.y, z)
-
-    def rotate_roll(self, roll: float):
-        cos_roll = math.cos(roll)
-        sin_roll = math.sin(roll)
-        x = self.x * cos_roll - self.y * sin_roll
-        y = self.x * sin_roll + self.y * cos_roll
-        return Vector(x, y, self.z)
 
 
 class Line3D:
@@ -532,7 +638,7 @@ class Polygon:
         return
 
     def __repr__(self):
-        return f"{self.lines}"
+        return f"{self.points}"
 
     @staticmethod
     def convert_lines(points, point_pairs) -> list[Line3D]:
@@ -546,6 +652,9 @@ class Polygon:
     def validate(points: list[Point3D], lines) -> bool:
         """checks if the polygon is valid"""
         if len(points) < 3:
+            return False
+
+        if len(set(points)) != len(points):
             return False
 
         if lines is None:
@@ -565,8 +674,7 @@ class Polygon:
 
         normal = Vector.from_points(points[1], points[0]).cross(Vector.from_points(points[1], points[2]))
         for point in points[3:]:
-            distance = normal.dot(point) - normal.dot(points[0])
-            if abs(distance) > 0.0000001:
+            if fp_equals(normal.dot(point), normal.dot(points[0])):
                 return False
         return True
 
@@ -750,6 +858,117 @@ class Mesh:
         """Projects and draws the solid on the screen"""
         pixels = self.pixels(camera)
         camera.projector.screen.draw_pixels(pixels)
+        return
+
+
+class Solid(Mesh):
+    pass
+
+
+class Circle(Mesh):
+    def __init__(self, center: Point3D, radius: float, normal: Vector, resolution: int = 8):
+        if radius < 0:
+            raise InvalidPolygonError("Circle radius must be greater than 0")
+
+        super().__init__(Circle.generate_polygons(center, radius, normal, resolution))
+        self.center = center
+        self.radius = radius
+        self.normal = normal
+        self.resolution = resolution
+        return
+
+    @staticmethod
+    def generate_polygons(center: Point3D, radius: float, normal:  Vector, resolution: int = 8) -> list[Polygon]:
+        points = circle(radius, center.color, resolution)
+
+        new_points = change_plane(points, normal, center)
+
+        polygons = create_polygons([center], new_points)
+        return polygons
+
+
+class Sphere(Solid):
+    def __init__(self, center: Point3D, radius: float, resolution: int = 8):
+        super().__init__(Sphere.generate_polygons(center, radius, resolution))
+        return
+
+    @staticmethod
+    def generate_polygons(center: Point3D, radius: float, resolution: int = 8) -> list[Polygon]:
+        assert resolution > 0, "resolution must be greater than 0"
+        side_num = 4 * resolution
+        angle_step = 2 * math.pi / side_num
+
+        polygons = []
+
+        front = Point3D(center.x, center.y, center.z + radius, center.color)
+
+        points = [front]
+
+        angle = angle_step
+        i = 0
+        while i < side_num:
+            sub_radius = math.sin(angle) * radius
+            z = math.cos(angle) * radius
+
+            sub_points = circle(sub_radius, center.color, resolution)
+            sub_points = change_plane(sub_points, Vector(0, 0, 1), Point3D(center.x, center.y, center.z + z))
+            polygons += create_polygons(points, sub_points)
+
+            points = sub_points
+            angle += angle_step
+            i += 2
+            continue
+
+        return polygons
+
+
+class Cylinder(Solid):
+    def __init__(self, base: Point3D, top: Point3D, base_radius: float, top_radius: float, resolution: int = 1):
+        super().__init__(Cylinder.generate_polygons(base, top, base_radius, top_radius, resolution))
+        return
+
+    @staticmethod
+    def generate_polygons(base: Point3D, top: Point3D, base_r: float, top_r: float, resolution: int) -> list[Polygon]:
+        polygons = []
+        normal = Vector.from_points(base, top)
+
+        top_circle = circle(top_r, top.color, resolution, cw=True)
+        top_points = change_plane(top_circle, normal, top)
+
+        bottom_circle = circle(base_r, base.color, resolution, cw=True)
+        bottom_points = change_plane(bottom_circle, -normal, base)
+
+        polygons += create_polygons([top], top_points)
+        polygons += create_polygons(top_points, bottom_points, opposite_ways=True)
+        polygons += create_polygons([base], bottom_points)
+
+        return polygons
+
+
+class TruncatedCylinder(Solid):
+    def __init__(self, top: Circle, bottom: Circle):
+        super().__init__(TruncatedCylinder.generate_polygons(top, bottom))
+        return
+
+    @staticmethod
+    def generate_polygons(top: Circle, bottom: Circle) -> list[Polygon]:
+        polygons = []
+        polygons += top.polygons
+        polygons += bottom.polygons
+
+        top_points = circle(top.radius, top.center.color, top.resolution)
+        top_points = change_plane(top_points, top.normal, top.center)
+
+        bottom_points = circle(bottom.radius, bottom.center.color, bottom.resolution)
+        bottom_points = change_plane(bottom_points, bottom.normal, bottom.center)
+
+        polygons += create_polygons(top_points, bottom_points, opposite_ways=True)
+        return polygons
+
+
+class Cone(Cylinder):
+    def __init__(self, base: Point3D, top: Point3D, base_radius: float, resolution: int = 1):
+        super().__init__(base, top, base_radius, 0, resolution)
         return
 
 
@@ -1018,7 +1237,7 @@ class PerspectiveProjector(Projector):
 
 
 
-# Constants
+# Settings
 
 class Settings:
     def __init__(self, screen_width: int = 100, screen_height: int = 100, pixel_size: int = 8, fps: int = 10,
@@ -1146,9 +1365,16 @@ def main_loop(config: Settings, screen: Screen):
     projector = PerspectiveProjector(screen, config.pixels_per_unit, config.fov)
     camera = Camera(projector, config.start_camera_pos, config.start_camera_dir)
 
-    # mesh = load_object_file('cube2.obj')
-    mesh = load_object_file('teapot.obj')
-    # mesh = get_rgb_cube()
+    mesh = []
+    mesh.append(load_object_file('cube2.obj'))
+    # mesh.append(load_object_file('teapot.obj'))
+    # mesh.append(get_rgb_cube())
+    # mesh.append(debug_triangle())
+    # mesh.append(Sphere(Point3D(0, 0, 2, Color.from_hex("CFB997")), 0.5, 8))
+    # mesh.append(Cylinder(Point3D(0, 0, 2), Point3D(0, 3, 2), 0.5, 1, 4))
+    # mesh.append(TruncatedCylinder(Circle(Point3D(0, 0, 2), 0.2, Vector(0, -1, 1)), Circle(Point3D(0, 3, 2), 1, Vector(0, 1, 1))))
+    # mesh.append(Cone(Point3D(0, 0, 2), Point3D(0, 3, 2), 1, 8))
+    # mesh.append(Circle(Point3D(0, 0, 2), 1, Vector(0, 0, -1), 2))
 
     dt = 1 / config.fps
     clock = pg.time.Clock()
@@ -1156,8 +1382,8 @@ def main_loop(config: Settings, screen: Screen):
         if motion(config, camera, dt):
             break
 
-        render_scene(camera, [mesh])
-        # debug()
+        render_scene(camera, mesh)
+        # debug_triangle()
 
         screen.update()
         dt = clock.tick(config.fps) / 1000
