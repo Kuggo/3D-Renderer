@@ -8,6 +8,7 @@ import pygame as pg
 # constants
 
 fp_tolerance = 1e-6
+rgb_bound = 255
 
 
 # auxiliary functions
@@ -54,7 +55,7 @@ def load_object_file(file_name) -> 'Mesh':
                     continue
 
                 r, g, b = float(tokens[5]), float(tokens[6]), float(tokens[7])
-                color = (Color(r, g, b) * 255).round()
+                color = (Color(r, g, b) * rgb_bound).round()
                 points.append(Point3D(x, y, z, color))
 
             elif tokens[0] == 'vt':     # TODO implement the rest of the file specifications
@@ -90,7 +91,7 @@ def load_object_file(file_name) -> 'Mesh':
                 if len(face_points) < 3:
                     raise InvalidPolygonError("A polygon must have at least 3 vertices")
                 if len(face_points) == 3:
-                    face = Triangle(face_points)
+                    face = Triangle(face_points[0], face_points[1], face_points[2])
                 elif len(face_points) == 4:
                     face = Quad(face_points)
                 else:
@@ -104,7 +105,7 @@ def load_object_file(file_name) -> 'Mesh':
 def change_plane(points: list['Point3D'], normal: 'Vector', offset: 'Point3D') -> list['Point3D']:
     new_points = []
     for point in points:
-        new_points.append(normal.use_as_reference(point) + offset)
+        new_points.append(normal.rotate_to_plane(point) + offset)
 
     return new_points
 
@@ -132,28 +133,71 @@ def circle(radius, color, resolution: int = 8, cw=True) -> list['Point3D']:
     return points
 
 
+def connect_between(a: 'Point2D', b: 'Point2D') -> list['Point2D']:
+    """connects two points on the screen by providing the points that connect them (in different y coordinates).
+    a must be on the top of b, or at the left if they are on the same height
+    b is not included in the returned list"""
+
+    points = []
+    d = a - b
+    x_step = -d.x / d.y
+    color_step = (b.color - a.color) / d.y
+
+    x = a.x
+    color = a.color
+    for y in range(a.y, b.y, -1):
+        points.append(Point2D(math.floor(x), y, color.round()))
+        x += x_step
+        color += color_step
+
+    return points
+
+
+def connect_between_horizontal(a: 'Point2D', b: 'Point2D') -> set['Point2D']:
+    """Returns all the points in the horizontal line between a and b, including a. b is not included."""
+
+    if a == b:
+        return set()
+
+    if a.x > b.x:
+        a, b = b, a
+
+    color_step = (b.color - a.color) / abs(b.x - a.x)
+
+    points = set()
+    color = a.color
+    for x in range(a.x, b.x):
+        points.add(Point2D(x, a.y, color.round()))
+        color += color_step
+
+    return points
+
+
 def create_polygons(prev_points, points, opposite_ways=False) -> list['Polygon']:
-    def index(l, j):
+    """creates a list of polygons from two lists of points.
+    The polygons are created by connecting uniformly the points in the two lists.
+    If one list is bigger than the other, the smaller one will repeat points."""
+    def index(l, j, backwards=False):
         nonlocal div
-        return l[round(j * len(l) / div) % len(l)]
+        if backwards:
+            return l[round((len(points)//2 - j) * len(l) / div) % len(l)]
+        else:
+            return l[round(j * len(l) / div) % len(l)]
 
     polygons = []
     div = max(len(points), len(prev_points))
     for i in range(0, max(len(points), len(prev_points)), 1):
-        if opposite_ways:
-            a = index(points, len(points)//2 - i)
-            b = index(points, len(points)//2 - i - 1)
-        else:
-            a = index(points, i)
-            b = index(points, i + 1)
-
+        a = index(points, i, backwards=opposite_ways)
+        b = index(points, i + 1, backwards=opposite_ways)
         c = index(prev_points, i + 1)
         d = index(prev_points, i)
 
-        if c == d:
-            polygons.append(Triangle([a, b, c]))
+        if a == b and c == d:
+            continue
+        elif c == d:
+            polygons.append(Triangle(a, b, c))
         elif a == b:
-            polygons.append(Triangle([c, d, a]))
+            polygons.append(Triangle(c, d, a))
         else:
             polygons.append(Quad([a, b, c, d]))
 
@@ -198,12 +242,15 @@ class Color:
         return Color(int(hex_str[1:3], 16), int(hex_str[3:5], 16), int(hex_str[5:7], 16))
 
     def tuple(self):
-        return clamp(0, 255, round(self.r)), clamp(0, 255, round(self.g)), clamp(0, 255, round(self.b))
+        return clamp(0, rgb_bound, round(self.r)), clamp(0, rgb_bound, round(self.g)), clamp(0, rgb_bound, round(self.b))
 
     def round(self):
-        return Color(clamp(0, 255, round(self.r)),
-                     clamp(0, 255, round(self.g)),
-                     clamp(0, 255, round(self.b)))
+        return Color(clamp(0, rgb_bound, round(self.r)),
+                     clamp(0, rgb_bound, round(self.g)),
+                     clamp(0, rgb_bound, round(self.b)))
+
+    def nerf(self, f: float):
+        return Color(self.r * f, self.g * f, self.b * f).round()
 
     def __add__(self, other: 'Color'):
         return Color(self.r + other.r, self.g + other.g, self.b + other.b)
@@ -526,7 +573,7 @@ class Vector(Point3D):
         yaw = math.atan2(self.x, self.z)
         return pitch, yaw
 
-    def use_as_reference(self, point: Point3D) -> Point3D:
+    def rotate_to_plane(self, point: Point3D) -> Point3D:
         """Returns the vector projected on the other vector"""
         pitch, yaw = self.get_polar()
         return point.rotate_pitch(-pitch).rotate_yaw(-yaw)
@@ -654,7 +701,7 @@ class Polygon:
         if len(points) < 3:
             return False
 
-        if len(set(points)) != len(points):
+        if len(set(points)) != len(points): # checking for duplicate points
             return False
 
         if lines is None:
@@ -674,7 +721,10 @@ class Polygon:
 
         normal = Vector.from_points(points[1], points[0]).cross(Vector.from_points(points[1], points[2]))
         for point in points[3:]:
-            if fp_equals(normal.dot(point), normal.dot(points[0])):
+            #if fp_equals(normal.dot(point), normal.dot(points[0])):
+            #    print(normal.dot(point), normal.dot(points[0]))
+            #    return False
+            if not fp_equals(normal.dot(Vector.from_points(point, points[0])), 0):
                 return False
         return True
 
@@ -691,10 +741,11 @@ class Polygon:
         """returns the normal vector of the polygon"""
         v1 = Vector.from_points(self.points[1], self.points[0])
         v2 = Vector.from_points(self.points[1], self.points[2])
-        return v1.cross(v2)
+        return v1.cross(v2).normalize()
 
-    def pixels(self, camera: 'Camera') -> set[Point2D]:
-        """Returns a set of all pixels that make up the polygon's edges"""
+    def pixels(self, camera: 'Camera', visibility: float) -> set[Point2D]:
+        """Returns a set of all pixels that make up the polygon's edges
+        """
         pixels = set()
         for line in self.project(camera):
             l_culled = camera.projector.screen.line_culling(line)
@@ -718,52 +769,68 @@ class Polygon:
     def facing_camera(self, camera: 'Camera') -> float:
         """checks if the polygon is facing the camera"""
         normal = self.normal()
-        camera_vector = Vector.from_points(self.points[0], camera.position)
+        camera_vector = Vector.from_points(camera.position, self.points[0]).normalize()
         return normal.dot(camera_vector)
 
     def render(self, camera: 'Camera'):
         """Projects and draws the polygon on the screen"""
-        if self.facing_camera(camera) > 0:
+        visibility = self.facing_camera(camera)
+        if visibility < 0 and not fp_equals(visibility, 0):
             return
-        pixels = self.pixels(camera)
+        pixels = self.pixels(camera, visibility)
         camera.projector.screen.draw_pixels(pixels)
         return
 
 
 class Triangle(Polygon):
-    def __init__(self, points: list[Point3D]):
-        super().__init__(points)
+    def __init__(self, a: Point3D, b: Point3D, c: Point3D):
+        super().__init__([a, b, c])
         return
 
-    def pixels(self, camera: 'Camera') -> set[Point2D]:     # TODO change the implementation to draw the face and not just edges
-        """Returns a set of all pixels that make up the triangle's edges"""
+    def pixels(self, camera: 'Camera', visibility: float = 1) -> set[Point2D]:
+        """Returns a set of all pixels that make up the triangle's face.
+        The right most pixels are not included.
+        Visibility is a multiplier for the color of the triangle"""
+
+        a, b, c = self.project(camera)
+
+        a.color = a.color.nerf(visibility)
+        b.color = b.color.nerf(visibility)
+        c.color = c.color.nerf(visibility)
+
+        if a.y == b.y:  # flat top
+            side1 = connect_between(a, c)
+            side2 = connect_between(b, c)
+
+        elif b.y == c.y:  # flat bottom
+            side1 = connect_between(a, b)
+            side2 = connect_between(a, c)
+
+        else:  # general case
+            side1 = connect_between(a, b)
+            side1 += connect_between(b, c)
+            side2 = connect_between(a, c)
+
+        assert (len(side1) == len(side2))
+
         pixels = set()
-        for line in self.project(camera):
-            l_culled = camera.projector.screen.line_culling(line)
-            if l_culled is None:
-                continue
-            pixels.update(l_culled.pixels())
+        for pair in zip(side1, side2):
+            assert pair[0].y == pair[1].y
+            line_pixels = connect_between_horizontal(pair[0], pair[1])
+            pixels.update(line_pixels)
 
         return pixels
 
-    def project(self, camera: 'Camera') -> set[Line2D]:
-        lines = set()
-        for line in self.lines:
-            try:
-                l2d = line.project(camera)
-            except BehindCameraError:
-                continue
-            lines.add(l2d)
+    def project(self, camera: 'Camera') -> tuple[Point2D, Point2D, Point2D]:
+        """returns the projected points of the triangle in order from top to bottom, left to right"""
+        a_projected = self.points[0].project(camera)
+        b_projected = self.points[1].project(camera)
+        c_projected = self.points[2].project(camera)
+        # sorted by y value and then x value
 
-        return lines
+        projected = sorted([a_projected, b_projected, c_projected], key=lambda x: (x.y, -x.x))
 
-    def render(self, camera: 'Camera'):
-        """Projects and draws the triangle on the screen"""
-        if self.facing_camera(camera) > 0:
-            return
-        pixels = self.pixels(camera)
-        camera.projector.screen.draw_pixels(pixels)
-        return
+        return projected[2], projected[1], projected[0]
 
 
 class Quad(Polygon):
@@ -862,7 +929,11 @@ class Mesh:
 
 
 class Solid(Mesh):
-    pass
+    def render(self, camera: 'Camera'):
+        """Projects and draws the solid on the screen"""
+        for polygon in self.polygons:
+            polygon.render(camera)
+        return
 
 
 class Circle(Mesh):
@@ -886,6 +957,12 @@ class Circle(Mesh):
         polygons = create_polygons([center], new_points)
         return polygons
 
+    def render(self, camera: 'Camera'):
+        """Projects and draws the solid on the screen"""
+        for polygon in self.polygons:
+            polygon.render(camera)
+        return
+
 
 class Sphere(Solid):
     def __init__(self, center: Point3D, radius: float, resolution: int = 8):
@@ -895,29 +972,22 @@ class Sphere(Solid):
     @staticmethod
     def generate_polygons(center: Point3D, radius: float, resolution: int = 8) -> list[Polygon]:
         assert resolution > 0, "resolution must be greater than 0"
-        side_num = 4 * resolution
-        angle_step = 2 * math.pi / side_num
-
         polygons = []
 
         front = Point3D(center.x, center.y, center.z + radius, center.color)
-
         points = [front]
 
-        angle = angle_step
-        i = 0
-        while i < side_num:
-            sub_radius = math.sin(angle) * radius
-            z = math.cos(angle) * radius
+        circle_coords = circle(radius, center.color, resolution, cw=False)
+
+        for c in circle_coords[1:(len(circle_coords) // 2) + 1]:
+            sub_radius = c.x
+            z = c.y
 
             sub_points = circle(sub_radius, center.color, resolution)
             sub_points = change_plane(sub_points, Vector(0, 0, 1), Point3D(center.x, center.y, center.z + z))
             polygons += create_polygons(points, sub_points)
 
             points = sub_points
-            angle += angle_step
-            i += 2
-            continue
 
         return polygons
 
@@ -1144,9 +1214,7 @@ class Camera:
         #             math.sin(self.yaw) * math.cos(self.pitch),
         #             math.sin(self.pitch))
 
-        return Vector(math.cos(self.yaw) * math.cos(self.pitch),
-                      -math.sin(self.yaw) * math.cos(self.pitch),
-                      math.sin(self.pitch))
+        return Vector(math.sin(self.yaw), math.sin(self.pitch), math.cos(self.yaw))
 
     def set_direction(self, direction_vector: Vector):
         self.yaw = math.atan2(direction_vector.y, direction_vector.x)
@@ -1285,13 +1353,11 @@ def get_rgb_cube() -> Mesh:
 def debug_triangle() -> Polygon:
     a = Point3D(-1, -1, 2, Color(255, 0, 0))
     b = Point3D(-1, -1, 4, Color(0, 255, 0))
-    c = Point3D(1, -1, 2, Color(0, 0, 255))
+    c = Point3D(1, -1, 3, Color(0, 0, 255))
     d = Point3D(1, -1, 4, Color(0, 255, 0))
 
-    connections = [(0, 1), (0, 2), (1, 3), (2, 3)]
-
-    quad = Polygon([a, b, c, d], connections)
-    triangle = Polygon([a, b, c], [(0, 1), (0, 2), (1, 2)])
+    quad = Quad([a, b, d, c])
+    triangle = Triangle(a, b, c)
     return triangle
 
 
@@ -1366,15 +1432,15 @@ def main_loop(config: Settings, screen: Screen):
     camera = Camera(projector, config.start_camera_pos, config.start_camera_dir)
 
     mesh = []
-    mesh.append(load_object_file('cube2.obj'))
+    # mesh.append(load_object_file('cube2.obj'))
     # mesh.append(load_object_file('teapot.obj'))
     # mesh.append(get_rgb_cube())
     # mesh.append(debug_triangle())
-    # mesh.append(Sphere(Point3D(0, 0, 2, Color.from_hex("CFB997")), 0.5, 8))
+    # mesh.append(Sphere(Point3D(0, 0, 2, Color.from_hex("CFB997")), 0.5, 2))
     # mesh.append(Cylinder(Point3D(0, 0, 2), Point3D(0, 3, 2), 0.5, 1, 4))
     # mesh.append(TruncatedCylinder(Circle(Point3D(0, 0, 2), 0.2, Vector(0, -1, 1)), Circle(Point3D(0, 3, 2), 1, Vector(0, 1, 1))))
     # mesh.append(Cone(Point3D(0, 0, 2), Point3D(0, 3, 2), 1, 8))
-    # mesh.append(Circle(Point3D(0, 0, 2), 1, Vector(0, 0, -1), 2))
+    mesh.append(Circle(Point3D(0, 0, 2), 1, Vector(0, 0, -1), 2))
 
     dt = 1 / config.fps
     clock = pg.time.Clock()
@@ -1383,7 +1449,6 @@ def main_loop(config: Settings, screen: Screen):
             break
 
         render_scene(camera, mesh)
-        # debug_triangle()
 
         screen.update()
         dt = clock.tick(config.fps) / 1000
@@ -1392,9 +1457,9 @@ def main_loop(config: Settings, screen: Screen):
 
 
 def main():
-    screen_width = 200  # in pixels
-    screen_height = 200  # in pixels
-    pixel_size = 4
+    screen_width = 100  # in pixels
+    screen_height = 100  # in pixels
+    pixel_size = 8
     fps = 15
     fov = math.pi / 2
     pixels_per_unit = 555
