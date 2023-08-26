@@ -93,7 +93,7 @@ def load_object_file(file_name) -> 'Mesh':
                 if len(face_points) == 3:
                     face = Triangle(face_points[0], face_points[1], face_points[2])
                 elif len(face_points) == 4:
-                    face = Quad(face_points)
+                    face = Quad(face_points[0], face_points[1], face_points[2], face_points[3])
                 else:
                     face = Polygon(face_points)
                 faces.append(face)
@@ -135,10 +135,15 @@ def circle(radius, color, resolution: int = 8, cw=True) -> list['Point3D']:
 
 def connect_between(a: 'Point2D', b: 'Point2D') -> list['Point2D']:
     """connects two points on the screen by providing the points that connect them (in different y coordinates).
-    a must be on the top of b, or at the left if they are on the same height
     b is not included in the returned list"""
-
     points = []
+
+    if a.y == b.y:
+        return points
+
+    if a.y < b.y:
+        a, b = b, a
+
     d = a - b
     x_step = -d.x / d.y
     color_step = (b.color - a.color) / d.y
@@ -173,6 +178,20 @@ def connect_between_horizontal(a: 'Point2D', b: 'Point2D') -> set['Point2D']:
     return points
 
 
+def fill_in(side1: list['Point2D'], side2: list['Point2D']) -> set['Point2D']:
+    """Returns a set of all pixels that make up the area between the two sets of points.
+            The right most pixels are not included.
+            Visibility is a multiplier for the color of the triangle"""
+
+    pixels = set()
+    for pair in zip(side1, side2):
+        assert pair[0].y == pair[1].y
+        line_pixels = connect_between_horizontal(pair[0], pair[1])
+        pixels.update(line_pixels)
+
+    return pixels
+
+
 def create_polygons(prev_points, points, opposite_ways=False) -> list['Polygon']:
     """creates a list of polygons from two lists of points.
     The polygons are created by connecting uniformly the points in the two lists.
@@ -199,7 +218,7 @@ def create_polygons(prev_points, points, opposite_ways=False) -> list['Polygon']
         elif a == b:
             polygons.append(Triangle(c, d, a))
         else:
-            polygons.append(Quad([a, b, c, d]))
+            polygons.append(Quad(a, b, c, d))
 
     return polygons
 
@@ -248,9 +267,6 @@ class Color:
         return Color(clamp(0, rgb_bound, round(self.r)),
                      clamp(0, rgb_bound, round(self.g)),
                      clamp(0, rgb_bound, round(self.b)))
-
-    def nerf(self, f: float):
-        return Color(self.r * f, self.g * f, self.b * f).round()
 
     def __add__(self, other: 'Color'):
         return Color(self.r + other.r, self.g + other.g, self.b + other.b)
@@ -743,41 +759,50 @@ class Polygon:
         v2 = Vector.from_points(self.points[1], self.points[2])
         return v1.cross(v2).normalize()
 
-    def pixels(self, camera: 'Camera', visibility: float) -> set[Point2D]:
-        """Returns a set of all pixels that make up the polygon's edges
-        """
-        pixels = set()
-        for line in self.project(camera):
-            l_culled = camera.projector.screen.line_culling(line)
-            if l_culled is None:
-                continue
-            pixels.update(l_culled.pixels())
+    def mid_point(self) -> Point3D:
+        """returns the mid-point of the polygon"""
+        x = 0
+        y = 0
+        z = 0
+        for point in self.points:
+            x += point.x
+            y += point.y
+            z += point.z
 
-        return pixels
-
-    def project(self, camera: 'Camera') -> set[Line2D]:
-        lines = set()
-        for line in self.lines:
-            try:
-                l2d = line.project(camera)
-            except BehindCameraError:
-                continue
-            lines.add(l2d)
-
-        return lines
+        return Point3D(x / len(self.points), y / len(self.points), z / len(self.points))
 
     def facing_camera(self, camera: 'Camera') -> float:
         """checks if the polygon is facing the camera"""
         normal = self.normal()
-        camera_vector = Vector.from_points(camera.position, self.points[0]).normalize()
+        camera_vector = Vector.from_points(camera.position, self.mid_point()).normalize()
         return normal.dot(camera_vector)
+
+    def project(self, camera: 'Camera', visibility: float = 1) -> tuple[Point2D, ...]:
+        """returns the projected points of the polygon in order from top to bottom, left to right"""
+        projected_points = []
+        for point in self.points:
+            projected_point = point.project(camera) # TODO getting behindcameraerror
+            projected_point.color = (point.color * visibility).round()
+            projected_points.append(projected_point)
+
+        # sorted by y value and then x value
+        projected_points.sort(key=lambda x: (-x.y, x.x))
+
+        return tuple(projected_points)
+
+    @staticmethod
+    def rasterize(points: tuple[Point2D]) -> set[Point2D]:
+        pass
 
     def render(self, camera: 'Camera'):
         """Projects and draws the polygon on the screen"""
         visibility = self.facing_camera(camera)
         if visibility < 0 and not fp_equals(visibility, 0):
             return
-        pixels = self.pixels(camera, visibility)
+
+        points = self.project(camera, visibility)
+        side1, side2 = self.rasterize(points)
+        pixels = fill_in(side1, side2)
         camera.projector.screen.draw_pixels(pixels)
         return
 
@@ -787,16 +812,16 @@ class Triangle(Polygon):
         super().__init__([a, b, c])
         return
 
-    def pixels(self, camera: 'Camera', visibility: float = 1) -> set[Point2D]:
+    @staticmethod
+    def rasterize(points: tuple[Point2D, ...]) -> tuple[list[Point2D], list[Point2D]]:
         """Returns a set of all pixels that make up the triangle's face.
         The right most pixels are not included.
         Visibility is a multiplier for the color of the triangle"""
+        assert len(points) == 3
+        a, b, c = points
 
-        a, b, c = self.project(camera)
-
-        a.color = a.color.nerf(visibility)
-        b.color = b.color.nerf(visibility)
-        c.color = c.color.nerf(visibility)
+        if a == b or b == c:    # it isn't the whole check but works because values are sorted
+            return [], []
 
         if a.y == b.y:  # flat top
             side1 = connect_between(a, c)
@@ -813,30 +838,223 @@ class Triangle(Polygon):
 
         assert (len(side1) == len(side2))
 
-        pixels = set()
-        for pair in zip(side1, side2):
-            assert pair[0].y == pair[1].y
-            line_pixels = connect_between_horizontal(pair[0], pair[1])
-            pixels.update(line_pixels)
-
-        return pixels
-
-    def project(self, camera: 'Camera') -> tuple[Point2D, Point2D, Point2D]:
-        """returns the projected points of the triangle in order from top to bottom, left to right"""
-        a_projected = self.points[0].project(camera)
-        b_projected = self.points[1].project(camera)
-        c_projected = self.points[2].project(camera)
-        # sorted by y value and then x value
-
-        projected = sorted([a_projected, b_projected, c_projected], key=lambda x: (x.y, -x.x))
-
-        return projected[2], projected[1], projected[0]
+        return side1, side2
 
 
 class Quad(Polygon):
-    def __init__(self, points: list[Point3D]):
-        super().__init__(points)
+    def __init__(self, a: Point3D, b: Point3D, c: Point3D, d: Point3D):
+        super().__init__([a, b, c, d])
         return
+
+    def project(self, camera: 'Camera', visibility: float = 1) -> tuple[Point2D, ...]:
+        """returns the projected points of the polygon in order from top to bottom, left to right"""
+        projected_points = []
+        for point in self.points:
+            projected_point = point.project(camera)
+            projected_point.color = (point.color * visibility).round()
+            projected_points.append(projected_point)
+
+        return tuple(projected_points)
+
+    @staticmethod
+    def rasterize1(points: tuple[Point2D, ...]) -> tuple[list[Point2D], list[Point2D]]:
+        """Returns a set of all pixels that make up the quad's face.
+        The right most pixels are not included.
+        Visibility is a multiplier for the color of the quad"""
+
+        a, b, c, d = points
+
+        if a == b:
+            return Triangle.rasterize((a, c, d))
+        elif b == c:
+            return Triangle.rasterize((a, b, d))
+        elif c == d:
+            return Triangle.rasterize((a, b, c))
+
+        if a.y == b.y:
+            if c.y == d.y:  # flat top and flat bottom
+                side1 = connect_between(a, c)
+                side2 = connect_between(b, d)
+            else:           # flat top and not flat bottom
+                if c.x < d.x:
+                    side1 = connect_between(a, c)
+                    side1 += connect_between(c, d)
+                    side2 = connect_between(b, d)
+                else:
+                    side1 = connect_between(a, d)
+                    side2 = connect_between(b, c)
+                    side2 += connect_between(c, d)
+
+        elif c.y == d.y:    # flat bottom and not flat top
+            if a.x < b.x:
+                side1 = connect_between(a, c)
+                side2 = connect_between(a, b)
+                side2 += connect_between(b, d)
+            else:
+                side1 = connect_between(a, b)
+                side1 += connect_between(b, c)
+                side2 = connect_between(a, d)
+
+        else:               # general case (not flat top and not flat bottom)
+            if a.x < b.x:
+                side2 = connect_between(a, b)
+                if c.x < d.x:
+                    side1 = connect_between(a, c)
+                    side1 += connect_between(c, d)
+                    side2 += connect_between(b, d)
+                else:
+                    side1 = connect_between(a, d)
+                    side2 += connect_between(b, c)
+                    side2 += connect_between(c, d)
+            else:
+                side1 = connect_between(a, b)
+                if c.x < d.x:
+                    side1 += connect_between(b, c)
+                    side1 += connect_between(c, d)
+                    side2 = connect_between(a, d)
+                else:
+                    side1 += connect_between(b, d)
+                    side2 = connect_between(a, c)
+                    side2 += connect_between(c, d)
+
+        return side1, side2
+
+    @staticmethod
+    def rasterize2(points: tuple[Point2D, ...]) -> tuple[list[Point2D], list[Point2D]]:
+
+        a, b, c, d = points
+
+        if a == b:
+            return Triangle.rasterize((a, c, d))
+        elif b == c:
+            return Triangle.rasterize((a, b, d))
+        elif c == d:
+            return Triangle.rasterize((a, b, c))
+
+        # splitting the quad into 3 shapes: 2 triangles and a quad. all of these with horizontal bases
+
+        side1 = []
+        side2 = []
+        if a.y != b.y:  # not flat top, draw 1st triangle
+            if a.x < b.x:
+                side2 += connect_between(a, b)
+                if a.distance(c) + b.distance(d) < a.distance(d) + b.distance(c):
+                    side1 += connect_between(a, c)
+                    side1 += connect_between(c, d)
+                    side2 += connect_between(b, d)
+
+
+                if c.x < d.x:
+                    side1 += connect_between(a, c)
+                    side1 += connect_between(c, d)
+                    side2 += connect_between(b, d)
+                else:
+                    side1 += connect_between(a, d)
+                    side2 += connect_between(b, c)
+                    side2 += connect_between(c, d)
+
+        elif c.y == d.y:  # flat bottom and not flat top
+            pass
+
+        else:
+            pass
+
+        return side1, side2
+
+    @staticmethod
+    def rasterize3(points: tuple[Point2D, ...]) -> tuple[list[Point2D], list[Point2D]]:
+        a, b, c, d = points
+
+        if a == b:
+            return Triangle.rasterize((a, c, d))
+        elif b == c:
+            return Triangle.rasterize((a, b, d))
+        elif c == d:
+            return Triangle.rasterize((a, b, c))
+
+        if (a.x < b.x and a.x < c.x and d.x < c.x) or (b.x < a.x and c.x < a.x and c.x < d.x):
+            # bend is all on the right or the left
+            side1 = connect_between(a, b)
+            side1 += connect_between(b, c)
+            side1 += connect_between(c, d)
+            side2 = connect_between(a, d)
+
+        else:  # bend is distributed equally
+            side1 = connect_between(a, b)
+            side1 += connect_between(b, d)
+            side2 = connect_between(a, c)
+            side2 += connect_between(c, d)
+
+        return side1, side2
+
+    @staticmethod
+    def rasterize4(points: tuple[Point2D, ...]) -> tuple[list[Point2D], list[Point2D]]:
+        a, b, c, d = points
+
+        if a == b:
+            return Triangle.rasterize((a, c, d))
+        elif b == c:
+            return Triangle.rasterize((a, b, d))
+        elif c == d:
+            return Triangle.rasterize((a, b, c))
+
+        if a.x < b.x:
+            left_side = []
+            right_side = connect_between(a, b)
+            if a.distance(c) + b.distance(d) < a.distance(d) + b.distance(c):  # a to c, and b to d
+                left_side += connect_between(a, c)
+                left_side += connect_between(c, d)
+                right_side += connect_between(b, d)
+            else:
+                left_side += connect_between(a, d)
+                right_side += connect_between(b, c)
+                right_side += connect_between(c, d)
+
+        else:
+            left_side = connect_between(a, b)
+            right_side = []
+            if a.distance(c) + b.distance(d) < a.distance(d) + b.distance(c):  # a to c, and b to d
+                if b.x < c.x:
+                    pass
+                else:
+                    pass
+                left_side += connect_between(b, d)
+                right_side += connect_between(a, c)
+                right_side += connect_between(c, d)
+            else:
+                right_side += connect_between(a, d)
+
+        return left_side, right_side
+
+    @staticmethod
+    def rasterize(points: tuple[Point2D, ...]) -> tuple[list[Point2D], list[Point2D]]:
+        a, b, c, d = points
+
+        if a == b:
+            return Triangle.rasterize(tuple(sorted([a, c, d], key=lambda x: (-x.y, x.x))))
+        elif b == c:
+            return Triangle.rasterize(tuple(sorted([a, b, d], key=lambda x: (-x.y, x.x))))
+        elif c == d:
+            return Triangle.rasterize(tuple(sorted([a, b, c], key=lambda x: (-x.y, x.x))))
+
+        points = []
+        points += connect_between(a, b)
+        points += connect_between(b, c)
+        points += connect_between(c, d)
+        points += connect_between(a, d)
+
+        points.sort(key=lambda p: (-p.y, p.x))
+
+        side1 = []
+        side2 = []
+        for i in range(len(points)):
+            if i % 2 == 0:
+                side1.append(points[i])
+            else:
+                side2.append(points[i])
+
+        return side1, side2
+
 
 
 class SolidOld:
@@ -950,11 +1168,14 @@ class Circle(Mesh):
 
     @staticmethod
     def generate_polygons(center: Point3D, radius: float, normal:  Vector, resolution: int = 8) -> list[Polygon]:
-        points = circle(radius, center.color, resolution)
+        polygons = []
+        prev_points = [center]
+        for i in range(1, resolution + 1):
+            points = circle(i * radius / resolution, center.color, i)
+            new_points = change_plane(points, normal, center)
+            polygons += create_polygons(prev_points, new_points)
+            prev_points = new_points
 
-        new_points = change_plane(points, normal, center)
-
-        polygons = create_polygons([center], new_points)
         return polygons
 
     def render(self, camera: 'Camera'):
@@ -1351,14 +1572,14 @@ def get_rgb_cube() -> Mesh:
 
 
 def debug_triangle() -> Polygon:
-    a = Point3D(-1, -1, 2, Color(255, 0, 0))
-    b = Point3D(-1, -1, 4, Color(0, 255, 0))
-    c = Point3D(1, -1, 3, Color(0, 0, 255))
-    d = Point3D(1, -1, 4, Color(0, 255, 0))
+    a = Point3D(-2, -1, 2, Color(255, 0, 0))
+    b = Point3D(-2, -1, 4, Color(0, 255, 0))
+    c = Point3D(2, -1, 2, Color(0, 0, 255))
+    d = Point3D(2, -1, 4, Color(0, 255, 0))
 
-    quad = Quad([a, b, d, c])
+    quad = Quad(a, b, d, c)
     triangle = Triangle(a, b, c)
-    return triangle
+    return quad
 
 
 def render_scene(camera: Camera, scene: list[Mesh]):
@@ -1436,11 +1657,11 @@ def main_loop(config: Settings, screen: Screen):
     # mesh.append(load_object_file('teapot.obj'))
     # mesh.append(get_rgb_cube())
     # mesh.append(debug_triangle())
-    # mesh.append(Sphere(Point3D(0, 0, 2, Color.from_hex("CFB997")), 0.5, 2))
+    mesh.append(Sphere(Point3D(0, 0, 2, Color.from_hex("CFB997")), 0.5, 8))
     # mesh.append(Cylinder(Point3D(0, 0, 2), Point3D(0, 3, 2), 0.5, 1, 4))
     # mesh.append(TruncatedCylinder(Circle(Point3D(0, 0, 2), 0.2, Vector(0, -1, 1)), Circle(Point3D(0, 3, 2), 1, Vector(0, 1, 1))))
     # mesh.append(Cone(Point3D(0, 0, 2), Point3D(0, 3, 2), 1, 8))
-    mesh.append(Circle(Point3D(0, 0, 2), 1, Vector(0, 0, -1), 2))
+    # mesh.append(Circle(Point3D(0, 0, 2), 1, Vector(0, 0, -1), 4))
 
     dt = 1 / config.fps
     clock = pg.time.Clock()
@@ -1457,9 +1678,9 @@ def main_loop(config: Settings, screen: Screen):
 
 
 def main():
-    screen_width = 100  # in pixels
-    screen_height = 100  # in pixels
-    pixel_size = 8
+    screen_width = 200  # in pixels
+    screen_height = 200  # in pixels
+    pixel_size = 4
     fps = 15
     fov = math.pi / 2
     pixels_per_unit = 555
